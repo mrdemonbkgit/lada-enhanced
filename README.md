@@ -10,6 +10,7 @@
 
 - **Recover Pixelated Videos**: Restore pixelated or mosaic scenes in adult videos.
 - **Watch/Export Videos**: Use either the CLI or GUI to watch or export your restored videos.
+- **Multi-GPU Parallel Processing**: Split video across multiple GPUs for near-linear speedup (e.g. ~4x with 4 GPUs).
 
 ## Usage
 
@@ -39,6 +40,27 @@ lada-cli --input <input video path>
 ```
 <img src="assets/screenshot_cli_1.png" alt="screenshot showing video export" width="60%">
 
+#### Multi-GPU Processing
+
+If you have multiple GPUs, you can process videos significantly faster by splitting the work across all available GPUs:
+
+```shell
+lada-cli --input <input video path> --num-gpus 4
+```
+
+Each GPU processes a segment of the video in parallel, then the segments are seamlessly merged. This provides near-linear speedup (e.g. a 55-minute video that takes ~5 minutes on 1 GPU can be processed in ~1.5 minutes on 4 GPUs).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--num-gpus` | `1` | Number of CUDA GPUs to use for parallel processing |
+| `--overlap-frames` | `60` | Number of overlap frames between segments to prevent boundary artifacts |
+
+> [!TIP]
+> For best quality with multi-GPU, use the accurate detection model and a high-quality encoding preset:
+> ```shell
+> lada-cli --input <input video path> --num-gpus 4 --mosaic-detection-model v4-accurate --encoding-preset hevc-nvidia-gpu-uhq --max-clip-length 360
+> ```
+
 For more information about additional options, use the `--help` argument.
 
 ## Performance expectations and hardware requirements
@@ -48,9 +70,11 @@ To run the app effectively, you’ll need a GPU and some patience. A graphics ca
 
 The app also requires a fair amount of RAM for buffering, which improves performance. For 1080p content, 6-8GB of RAM should suffice, but 4K video will require significantly more.
 
-To watch the restored video in real-time, you'll need a powerful machine. Otherwise, the player may pause and buffer as it computes the next set of restored frames. While viewing the video, no encoding is done, but additional RAM will be used for buffering.
+To watch the restored video in real-time, you’ll need a powerful machine. Otherwise, the player may pause and buffer as it computes the next set of restored frames. While viewing the video, no encoding is done, but additional RAM will be used for buffering.
 
 If your GPU isn’t fast enough for real-time playback, you can export the video and watch it later in your preferred media player (this is supported in both the GUI and CLI).
+
+**Multi-GPU systems**: If you have multiple NVIDIA GPUs, you can use `--num-gpus` in the CLI to split the video across all GPUs for near-linear speedup. Each GPU loads its own models and processes a segment independently, so VRAM requirements remain the same per GPU.
 
 Although the app can run on a CPU, performance will be extremely slow, making it impractical for most users.
 
@@ -108,6 +132,10 @@ docker pull ladaapp/lada:latest
 > When using Docker you'll need to make the file/directory available to the container as well as the GPU:
 >  ```shell
 > docker run --rm --gpus all --mount type=bind,src=<input video path>,dst=/mnt ladaapp/lada:latest --input "/mnt/<input video file>"
+> ```
+> For multi-GPU processing, pass all GPUs and use `--num-gpus`:
+>  ```shell
+> docker run --rm --gpus all --mount type=bind,src=<input video path>,dst=/mnt ladaapp/lada:latest --input "/mnt/<input video file>" --num-gpus 4
 > ```
 
 > [!TIP]
