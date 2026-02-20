@@ -25,7 +25,7 @@ logging.basicConfig(level=LOG_LEVEL)
 class FrameRestorer:
     def __init__(self, device, video_file, max_clip_length, mosaic_restoration_model_name,
                  mosaic_detection_model: Yolo11SegmentationModel, mosaic_restoration_model, preferred_pad_mode,
-                 mosaic_detection=False):
+                 mosaic_detection=False, max_frames: int = -1):
         self.device = torch.device(device)
         self.mosaic_restoration_model_name = mosaic_restoration_model_name
         self.max_clip_length = max_clip_length
@@ -38,6 +38,7 @@ class FrameRestorer:
         self.mosaic_detection = mosaic_detection
         self.eof = False
         self.stop_requested = False
+        self.max_frames = max_frames
 
         # limit queue size to approx 512MB
         max_frames_in_frame_restoration_queue = (512 * 1024 * 1024) // (self.video_meta_data.video_width * self.video_meta_data.video_height * 3)
@@ -60,7 +61,8 @@ class FrameRestorer:
                                               device=self.device,
                                               max_clip_length=self.max_clip_length,
                                               pad_mode=self.preferred_pad_mode,
-                                              error_handler=self._on_worker_thread_error)
+                                              error_handler=self._on_worker_thread_error,
+                                              max_frames=self.max_frames)
 
         self.clip_restoration_thread: PipelineThread | None = None
         self.frame_restoration_thread: PipelineThread | None = None
@@ -337,6 +339,10 @@ class FrameRestorer:
                         logger.debug("frame restoration worker: frame_restoration_queue producer unblocked")
                         break
                 frame_num += 1
+                if 0 < self.max_frames <= (frame_num - self.start_frame):
+                    self.eof = True
+                    self.frame_restoration_queue.put(EOF_MARKER)
+                    break
         if self.eof:
             logger.debug("frame restoration worker: stopped itself, EOF")
         else:

@@ -162,7 +162,7 @@ class Clip:
         return self.frames[item], self.masks[item], self.boxes[item]
 
 class MosaicDetector:
-    def __init__(self, model: Yolo11SegmentationModel, video_metadata: VideoMetadata, frame_detection_queue: PipelineQueue, mosaic_clip_queue: PipelineQueue, error_handler: Callable[[ErrorMarker], None], max_clip_length=30, clip_size=256, device: torch.device | None = None, pad_mode='reflect', batch_size=4):
+    def __init__(self, model: Yolo11SegmentationModel, video_metadata: VideoMetadata, frame_detection_queue: PipelineQueue, mosaic_clip_queue: PipelineQueue, error_handler: Callable[[ErrorMarker], None], max_clip_length=30, clip_size=256, device: torch.device | None = None, pad_mode='reflect', batch_size=4, max_frames: int = -1):
         self.model = model
         self.video_meta_data = video_metadata
         self.device = torch.device(device) if device is not None else device
@@ -183,6 +183,7 @@ class MosaicDetector:
         self.inference_thread: PipelineThread | None = None
         self.stop_requested = False
         self.batch_size = batch_size
+        self.max_frames = max_frames
 
     def start(self, start_ns):
         assert self.frame_feeder_queue.empty()
@@ -284,6 +285,7 @@ class MosaicDetector:
     def _frame_feeder_worker(self):
         logger.debug("frame feeder: started")
         eof = False
+        frames_read = 0
         with video_utils.VideoReader(self.video_meta_data.video_file) as video_reader:
             if self.start_ns > 0:
                 video_reader.seek(self.start_ns)
@@ -293,8 +295,11 @@ class MosaicDetector:
                 try:
                     frames = []
                     for i in range(self.batch_size):
+                        if 0 < self.max_frames <= frames_read:
+                            raise StopIteration
                         frame, _ = next(video_frames_generator)
                         frames.append(frame)
+                        frames_read += 1
                 except StopIteration:
                     eof = True
                 if len(frames) > 0:

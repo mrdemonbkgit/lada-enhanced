@@ -67,6 +67,8 @@ def setup_argparser() -> argparse.ArgumentParser:
     group_general.add_argument('--output-file-pattern', type=str, default="{orig_file_name}.restored.mp4", help=_("Pattern used to determine output file name(s). Used when input is a directory, or a file but no output path was specified. Must include the placeholder '{orig_file_name}'. (default: %(default)s)"))
     group_general.add_argument('--device', type=str, default=get_default_torch_device(), help=_('Device used for running Restoration and Detection models. Use "--list-devices" to see what\'s available (default: %(default)s)'))
     group_general.add_argument('--fp16', action=argparse.BooleanOptionalAction, default=gpu_has_fp16_acceleration(), help=_("Reduces VRAM usage and may increase speed on modern GPUs, with negligible quality difference. (default: %(default)s)"))
+    group_general.add_argument('--num-gpus', type=int, default=1, help=_('Number of GPUs to use for parallel processing. Each GPU processes a segment of the video. Requires CUDA devices. (default: %(default)s)'))
+    group_general.add_argument('--overlap-frames', type=int, default=60, help=_('Number of overlap frames between segments in multi-GPU mode. Higher values reduce boundary artifacts. (default: %(default)s)'))
     group_general.add_argument('--list-devices', action='store_true', help=_("List available devices and exit"))
     group_general.add_argument('--version', action='store_true', help=_("Display version and exit"))
     group_general.add_argument('--help', action='store_true', help=_("Show this help message and exit"))
@@ -178,6 +180,19 @@ def main():
         print(_("Temporary directory {temporary_path} doesn't exist. Creating…").format(temporary_path=args.temporary_directory))
         os.makedirs(args.temporary_directory)
 
+    if args.num_gpus > 1:
+        if not torch.cuda.is_available():
+            print(_("Multi-GPU mode requires CUDA but CUDA is not available"))
+            sys.exit(1)
+        available_gpus = torch.cuda.device_count()
+        if args.num_gpus > available_gpus:
+            print(_("Requested {num_gpus} GPUs but only {available_gpus} are available").format(
+                num_gpus=args.num_gpus, available_gpus=available_gpus))
+            sys.exit(1)
+        if not args.device.startswith("cuda"):
+            print(_("Multi-GPU mode requires a CUDA device, but device is set to '{device}'").format(device=args.device))
+            sys.exit(1)
+
     if detection_modelfile := ModelFiles.get_detection_model_by_name(args.mosaic_detection_model):
         mosaic_detection_model_path = detection_modelfile.path
     elif os.path.isfile(args.mosaic_detection_model):
@@ -218,26 +233,52 @@ def main():
         sys.exit(1)
     assert encoder is not None and encoder_options is not None
 
-    device = torch.device(args.device)
-    mosaic_detection_model, mosaic_restoration_model, preferred_pad_mode = load_models(
-        device, mosaic_restoration_model_name, mosaic_restoration_model_path, args.mosaic_restoration_config_path,
-        mosaic_detection_model_path, args.fp16, args.detect_face_mosaics
-    )
-
     input_files, output_files = utils.setup_input_and_output_paths(args.input, args.output, args.output_file_pattern)
 
     single_file_input = len(input_files) == 1
 
-    for input_path, output_path in zip(input_files, output_files):
-        if not single_file_input:
-            print(f"{os.path.basename(input_path)}:")
-        try:
-            process_video_file(input_path=input_path, output_path=output_path, temp_dir_path=args.temporary_directory, device=device, mosaic_restoration_model=mosaic_restoration_model, mosaic_detection_model=mosaic_detection_model,
-                               mosaic_restoration_model_name=mosaic_restoration_model_name, preferred_pad_mode=preferred_pad_mode, max_clip_length=args.max_clip_length,
-                               encoder=encoder, encoder_options=encoder_options, mp4_fast_start=args.mp4_fast_start)
-        except KeyboardInterrupt:
-            print(_("Received Ctrl-C, stopping restoration."))
-            break
+    if args.num_gpus > 1:
+        from lada.multigpu.coordinator import process_video_file_multigpu
+        for input_path, output_path in zip(input_files, output_files):
+            if not single_file_input:
+                print(f"{os.path.basename(input_path)}:")
+            try:
+                process_video_file_multigpu(
+                    input_path=input_path,
+                    output_path=output_path,
+                    temp_dir_path=args.temporary_directory,
+                    num_gpus=args.num_gpus,
+                    overlap_frames=args.overlap_frames,
+                    mosaic_restoration_model_name=mosaic_restoration_model_name,
+                    mosaic_restoration_model_path=mosaic_restoration_model_path,
+                    mosaic_restoration_config_path=args.mosaic_restoration_config_path,
+                    mosaic_detection_model_path=mosaic_detection_model_path,
+                    fp16=args.fp16,
+                    detect_face_mosaics=args.detect_face_mosaics,
+                    max_clip_length=args.max_clip_length,
+                    encoder=encoder,
+                    encoder_options=encoder_options,
+                    mp4_fast_start=args.mp4_fast_start,
+                )
+            except KeyboardInterrupt:
+                print(_("Received Ctrl-C, stopping restoration."))
+                break
+    else:
+        device = torch.device(args.device)
+        mosaic_detection_model, mosaic_restoration_model, preferred_pad_mode = load_models(
+            device, mosaic_restoration_model_name, mosaic_restoration_model_path, args.mosaic_restoration_config_path,
+            mosaic_detection_model_path, args.fp16, args.detect_face_mosaics
+        )
+        for input_path, output_path in zip(input_files, output_files):
+            if not single_file_input:
+                print(f"{os.path.basename(input_path)}:")
+            try:
+                process_video_file(input_path=input_path, output_path=output_path, temp_dir_path=args.temporary_directory, device=device, mosaic_restoration_model=mosaic_restoration_model, mosaic_detection_model=mosaic_detection_model,
+                                   mosaic_restoration_model_name=mosaic_restoration_model_name, preferred_pad_mode=preferred_pad_mode, max_clip_length=args.max_clip_length,
+                                   encoder=encoder, encoder_options=encoder_options, mp4_fast_start=args.mp4_fast_start)
+            except KeyboardInterrupt:
+                print(_("Received Ctrl-C, stopping restoration."))
+                break
 
 if __name__ == '__main__':
     main()
